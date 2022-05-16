@@ -59,7 +59,7 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
             endtime = datetime.datetime.fromtimestamp(int(row[2])).strftime('%Y-%m-%d %H:%M:%S')
             data_list.append(( starttime, endtime, row[0], row[3], row[4], row[5]))
 
-        report.write_artifact_data_table(data_headers, data_list, file_found)
+        report.write_artifact_data_table(data_headers, data_list, whatsapp_msgstore_db)
         report.end_artifact_report()
         
         tsvname = f'Whatsapp - Group Call Logs'
@@ -101,7 +101,7 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
             endtime = datetime.datetime.fromtimestamp(int(row[2])).strftime('%Y-%m-%d %H:%M:%S')
             data_list.append((starttime, row[1], endtime, row[3], row[4]))
             
-        report.write_artifact_data_table(data_headers, data_list, file_found)
+        report.write_artifact_data_table(data_headers, data_list, whatsapp_msgstore_db)
         report.end_artifact_report()
         
         tsvname = f'Whatsapp - Single Call Logs'
@@ -115,36 +115,53 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
             
     cursor.execute('''attach database "''' + whatsapp_wa_db + '''" as wadb ''')
     
+    
     try:
         cursor.execute('''
-                    SELECT messages.key_remote_jid  AS id, 
-                           case 
-                              when contact_book_w_groups.recipients is null then messages.key_remote_jid
-                              else contact_book_w_groups.recipients
-                           end as recipients, 
-                           key_from_me              AS direction, 
-                           messages.data            AS content, 
-                           messages.timestamp/1000       AS send_timestamp, 
-                           messages.received_timestamp/1000, 
-                           case 
-                              when messages.remote_resource is null then messages.key_remote_jid 
-                              else messages.remote_resource
-                           end AS group_sender,
-                           messages.media_url       AS attachment
-                    FROM   (SELECT jid, 
-                                   recipients 
-                            FROM   wadb.wa_contacts AS contacts 
-                                   left join (SELECT gjid, 
-                                                     Group_concat(CASE 
-                                                                    WHEN jid == "" THEN NULL 
-                                                                    ELSE jid 
-                                                                  END) AS recipients 
-                                              FROM   group_participants 
-                                              GROUP  BY gjid) AS groups 
-                                          ON contacts.jid = groups.gjid 
-                            GROUP  BY jid) AS contact_book_w_groups 
-                           join messages 
-                             ON messages.key_remote_jid = contact_book_w_groups.jid
+                    SELECT 	MESSAGES._id AS ID, 
+        MESSAGES.from_me AS DIRECTION,
+		CASE
+			WHEN MESSAGES.from_me == 0 AND RECEPIENT LIKE '%@g.us%' THEN	(SELECT raw_string FROM jid WHERE jid._id == MESSAGES.sender_jid_row_id)
+			WHEN MESSAGES.from_me == 0 THEN RECEPIENT
+			ELSE "user"
+		END AS SENDER,
+		MESSAGES.timestamp/1000 AS SEND_TIMESTAMP, 
+        MESSAGES.received_timestamp/1000 AS RECEIVED_TIMESTAMP,
+		CASE
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 11 THEN "Group created: " || MESSAGES.text_data
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 67 THEN "The messages in this chat are crypto protected"
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 56 THEN "Temp messages configuration changed"
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 12 THEN "Added " || (SELECT raw_string FROM (SELECT message_system_chat_participant.message_row_id, raw_string FROM jid JOIN message_system_chat_participant ON jid._id = message_system_chat_participant.user_jid_row_id) WHERE message_row_id == MESSAGES._id) 
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 14 THEN "Removed " || (SELECT raw_string FROM (SELECT message_system_chat_participant.message_row_id, raw_string FROM jid JOIN message_system_chat_participant ON jid._id = message_system_chat_participant.user_jid_row_id) WHERE message_row_id == MESSAGES._id) 
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 56 THEN "call"
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 70 THEN "call lost"
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 58 THEN CASE WHEN MESSAGES.text_data LIKE 'True' THEN "You has blocked this contact" ELSE "You has unblocked this contact" END
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 69 THEN "This company work with other to manage this chat"
+			ELSE MESSAGES.text_data
+		END	AS CONTENT,
+		CASE
+			WHEN MESSAGES.lookup_tables == 2 OR MESSAGES.lookup_tables == 3 THEN
+				(SELECT CITED_ID FROM (SELECT message_quoted.message_row_id, message_quoted.key_id AS CITED_KEY_ID, message._id AS CITED_ID FROM message_quoted JOIN message ON CITED_KEY_ID == message.key_id) WHERE message_row_id == MESSAGES._id)
+			ELSE ""
+			END AS QUOTED_MESSAGE_ID,
+		RECEPIENT,
+		CASE
+		WHEN MESSAGES.message_type == 1 OR MESSAGES.message_type == 20 OR MESSAGES.message_type == 9 OR MESSAGES.message_type == 2 OR MESSAGES.message_type == 3 THEN (SELECT file_path FROM message_media WHERE message_media.message_row_id == MESSAGES._id)
+		WHEN MESSAGES.message_type == 4 THEN (SELECT vcard FROM message_vcard WHERE message_vcard.message_row_id == MESSAGES._id)
+		WHEN MESSAGES.message_type == 5 THEN (SELECT latitude || ';' || longitude FROM message_location WHERE message_location.message_row_id == MESSAGES._id)
+		ELSE ""
+		END AS ATTACHMENT
+	FROM (SELECT *
+				FROM message
+				LEFT JOIN message_system
+				ON 	message._id = message_system.message_row_id ) AS MESSAGES
+	JOIN (
+		SELECT jid._id AS CONTACT_ID, raw_string AS RECEPIENT, chat._id AS CHAT_ROW
+			FROM jid
+			JOIN chat
+			ON jid._id = chat.jid_row_id)
+	ON 	MESSAGES.chat_row_id = CHAT_ROW 
+	ORDER BY RECEPIENT
         ''')
         
         all_rows = cursor.fetchall()
@@ -156,15 +173,18 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
         report = ArtifactHtmlReport('Whatsapp - Messages')
         report.start_artifact_report(report_folder, 'Whatsapp - Messages')
         report.add_script()
-        data_headers = ('Send Timestamp', 'Received Timestamp','Message ID','Recipients', 'Direction', 'Content', 'Group Sender', 'Attachment') # Don't remove the comma, that is required to make this a tuple as there is only 1 element
+        data_headers = ('Message ID','Direction','Sender','Send Timestamp', 'Received Timestamp','Content','Message Quoted','Recipient','Attachment') # Don't remove the comma, that is required to make this a tuple as there is only 1 element
         data_list = []
         for row in all_rows:
-            sendtime = datetime.datetime.fromtimestamp(int(row[4])).strftime('%Y-%m-%d %H:%M:%S')
-            receivetime = datetime.datetime.fromtimestamp(int(row[5])).strftime('%Y-%m-%d %H:%M:%S')
-
-            data_list.append((sendtime, receivetime, row[0], row[1], row[2], row[3],row[6], row[7]))
+            sendtime = datetime.datetime.fromtimestamp(int(row[3])).strftime('%Y-%m-%d %H:%M:%S')
+            if row[4] == 0:
+                receivetime = "";
+            else:
+                receivetime = datetime.datetime.fromtimestamp(int(row[4])).strftime('%Y-%m-%d %H:%M:%S')
             
-        report.write_artifact_data_table(data_headers, data_list, file_found)
+            data_list.append((row[0], row[1], row[2], sendtime, receivetime, row[5], row[6], row[7], row[8]))
+            
+        report.write_artifact_data_table(data_headers, data_list, whatsapp_msgstore_db)
         report.end_artifact_report()
         
         tsvname = f'Whatsapp - Messages'
@@ -219,7 +239,7 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
         for row in all_rows:
             data_list.append((row[0], row[1]))
 
-        report.write_artifact_data_table(data_headers, data_list, file_found)
+        report.write_artifact_data_table(data_headers, data_list, whatsapp_wa_db)
         report.end_artifact_report()
         
         tsvname = f'Whatsapp - Contacts'
@@ -254,7 +274,7 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
                     report.add_script()
                     data_headers = ('Version', 'Name', 'User Status', 'Country Code', 'Mobile Number')
                     data_list = []
-                    data_list.append((data[0], data[3], data[2], data[1], data[4]))
+                    data_list.append((data[1], data[4], data[2], data[3], data[0]))
                     report.write_artifact_data_table(data_headers, data_list, file_found, html_escape=False)
                     report.end_artifact_report()
 
