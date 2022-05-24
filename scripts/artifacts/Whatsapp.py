@@ -2,8 +2,10 @@ import sqlite3
 import datetime
 import xmltodict
 
+from os.path import isfile, join, basename, dirname, getsize, abspath
+from os import makedirs
 from scripts.artifact_report import ArtifactHtmlReport
-from scripts.ilapfuncs import logfunc, tsv, timeline, is_platform_windows, open_sqlite_db_readonly
+from scripts.ilapfuncs import logfunc, tsv, timeline, is_platform_windows, open_sqlite_db_readonly, media_to_html
 
 def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
 
@@ -12,6 +14,7 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
     whatsapp_msgstore_db = ''
     whatsapp_wa_db = ''
     
+  
     for file_found in files_found:
         
         file_name = str(file_found)
@@ -114,7 +117,7 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
         logfunc('No Whatsapp Single Call Log available')
             
     cursor.execute('''attach database "''' + whatsapp_wa_db + '''" as wadb ''')
-    
+  
     
     try:
         cursor.execute('''
@@ -128,15 +131,21 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
 		MESSAGES.timestamp/1000 AS SEND_TIMESTAMP, 
         MESSAGES.received_timestamp/1000 AS RECEIVED_TIMESTAMP,
 		CASE
+		    WHEN MESSAGES.message_type == 10 THEN "Call lost"
+		    WHEN MESSAGES.message_type == 11 THEN ""
+		    WHEN MESSAGES.message_type == 15 THEN "Deleted message"
+		    WHEN MESSAGES.message_type == 16 THEN "Real-time Location"
+		    WHEN MESSAGES.message_type == 36 THEN "Temporary messages cofig changed"
+		    WHEN MESSAGES.message_type == 42 THEN "View-once image viewed"
+		    WHEN MESSAGES.message_type == 43 THEN "View-once video viewed"
 			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 11 THEN "Group created: " || MESSAGES.text_data
-			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 67 THEN "The messages in this chat are crypto protected"
-			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 56 THEN "Temp messages configuration changed"
 			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 12 THEN "Added " || (SELECT raw_string FROM (SELECT message_system_chat_participant.message_row_id, raw_string FROM jid JOIN message_system_chat_participant ON jid._id = message_system_chat_participant.user_jid_row_id) WHERE message_row_id == MESSAGES._id) 
 			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 14 THEN "Removed " || (SELECT raw_string FROM (SELECT message_system_chat_participant.message_row_id, raw_string FROM jid JOIN message_system_chat_participant ON jid._id = message_system_chat_participant.user_jid_row_id) WHERE message_row_id == MESSAGES._id) 
-			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 56 THEN "call"
-			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 70 THEN "call lost"
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 56 THEN "Temp messages configuration changed"
 			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 58 THEN CASE WHEN MESSAGES.text_data LIKE 'True' THEN "You has blocked this contact" ELSE "You has unblocked this contact" END
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 67 THEN "The messages in this chat are crypto protected"
 			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 69 THEN "This company work with other to manage this chat"
+			WHEN MESSAGES.message_type == 7 AND MESSAGES.action_type == 70 THEN "call lost"
 			ELSE MESSAGES.text_data
 		END	AS CONTENT,
 		CASE
@@ -181,6 +190,11 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
                 receivetime = "";
             else:
                 receivetime = datetime.datetime.fromtimestamp(int(row[4])).strftime('%Y-%m-%d %H:%M:%S')
+            
+            ### Add media files witin the report
+            #if row[8] != '':
+                
+            
             
             data_list.append((row[0], row[1], row[2], sendtime, receivetime, row[5], row[6], row[7], row[8]))
             
@@ -249,7 +263,21 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
         logfunc('No Whatsapp Contacts found')
 
     db.close
+    destinationFile = ''
+    tolink = []
 
+    for file_found in files_found:
+        
+        if('me' == basename(file_found)):
+            makedirs(join(report_folder, "WhatsappProfilePic"))
+            exportFileName =  (basename(file_found) + '.jpg')
+            destinationFile = join(report_folder, "WhatsappProfilePic", exportFileName)
+            with open (file_found, 'rb') as currentFile:
+                with open (destinationFile, 'wb') as File:
+                        File.write(currentFile.read())
+                        File.close()
+                        tolink.append(destinationFile)
+    
     for file_found in files_found:
         if('com.whatsapp_preferences_light.xml' in file_found):
             with open(file_found, encoding='utf-8') as fd:
@@ -272,9 +300,10 @@ def get_Whatsapp(files_found, report_folder, seeker, wrap_text):
                     report = ArtifactHtmlReport('Whatsapp - User Profile')
                     report.start_artifact_report(report_folder,'Whatsapp - User Profile')
                     report.add_script()
-                    data_headers = ('Version', 'Name', 'User Status', 'Country Code', 'Mobile Number')
+                    data_headers = ('Version', 'Name', 'User Status', 'Country Code', 'Mobile Number', 'Profile Picture')
                     data_list = []
-                    data_list.append((data[1], data[4], data[2], data[3], data[0]))
+                    thumb = media_to_html(destinationFile, tolink, join(report_folder,"WhatsappProfilePic"))
+                    data_list.append((data[1], data[4], data[2], data[3], data[0], thumb))
                     report.write_artifact_data_table(data_headers, data_list, file_found, html_escape=False)
                     report.end_artifact_report()
 
